@@ -1,0 +1,72 @@
+pipeline {
+  agent {
+    label 'maven'
+  }
+  stages {
+    stage('checkout scm') {
+      agent none
+      steps {
+        git(branch: 'master', url: 'https://gitee.com/robertlbr/k8s_maven.git', credentialsId: 'gitee', changelog: true, poll: false)
+      }
+    }
+
+    stage('unit test') {
+      steps {
+        container('maven') {
+          sh 'mvn clean test'
+        }
+
+      }
+    }
+
+    stage('build & push') {
+      agent none
+      steps {
+        container('maven') {
+          sh 'mvn -Dmaven.test.skip=true clean package'
+          sh 'docker build -f Dockerfile-online -t ${REGISTRY}/${DOCKERHUB_NAMESPACE}/${APP_NAME}:SNAPSHOT-${BRANCH_NAME}-${BUILD_NUMBER} .'
+          withCredentials([usernamePassword(
+                        credentialsId: 'aliyun',
+                        passwordVariable: 'DOCKER_PASSWORD',
+                        usernameVariable: 'DOCKER_USERNAME'
+                      )]) {
+              sh 'echo "$DOCKER_PASSWORD" | docker login $REGISTRY -u "$DOCKER_USERNAME" --password-stdin'
+              sh 'docker push  $REGISTRY/$DOCKERHUB_NAMESPACE/$APP_NAME:SNAPSHOT-$BRANCH_NAME-$BUILD_NUMBER'
+            }
+
+          }
+
+        }
+      }
+
+      stage('deploy to dev') {
+        steps {
+          container('maven') {
+            withCredentials([
+                          kubeconfigFile(
+                              credentialsId: env.KUBECONFIG_CREDENTIAL_ID,
+                              variable: 'KUBECONFIG'
+                            )
+                          ]) {
+                  sh 'envsubst < deploy/all-in-one/devops-sample.yaml | kubectl apply -f -'
+                }
+
+              }
+
+            }
+          }
+
+        }
+        environment {
+          DOCKER_CREDENTIAL_ID = 'dockerhub-id'
+          KUBECONFIG_CREDENTIAL_ID = 'demo-kubeconfig'
+          REGISTRY = 'registry.cn-hangzhou.aliyuncs.com'
+          DOCKERHUB_NAMESPACE = 'testhub68'
+          APP_NAME = 'devops-maven-sample'
+          BRANCH_NAME = 'dev'
+          PROJECT_NAME = 'kubesphere-sample-dev'
+        }
+        parameters {
+          string(name: 'TAG_NAME', defaultValue: '', description: '')
+        }
+      }
